@@ -55,3 +55,42 @@ No zero-cost guarantee is claimed.
 ## Limitations
 Website and group information are not available for every company.
 Missing information is reported explicitly rather than invented.
+
+## Validated 1,000-company batch
+
+- Run ID: entry-test-1000
+- Companies processed: 1,000
+- Terminal envelopes generated: 1,000
+- External requests: 5,545
+- Data transferred: 46,930,170 bytes
+- Runtime: approximately 22 minutes 48 seconds
+- All five validation checks passed
+- No silent drops detected
+
+Files:
+- entry-companies.jsonl: 1,000-company input batch
+- entry-1000-report.json: machine-readable execution report
+- submission-profiles-1000.jsonl: privacy-redacted copy containing 1,000 unique company profiles
+
+The original validated profiles are retained locally.
+The submission copy excludes email and telephone fields and address fields for ENK companies.
+These redactions may affect evidence completeness.
+
+These are local execution results, not an official Builderr evaluation score.
+
+## Reproducibility notes
+
+The BRREG registry CSV is not committed to GitHub.
+Download it from:
+https://data.brreg.no/enhetsregisteret/api/enheter/lastned/csv
+
+Save it as brreg-enheter.csv in the repository root.
+
+The documented batch command requires network access to the relevant public APIs.
+
+## Cost observations for the 1,000-company run
+
+The local batch made 5,545 external requests.
+No paid Brave Search API was configured.
+Direct API charges were not measured.
+Compute, internet usage, and any applicable third-party charges are excluded.
