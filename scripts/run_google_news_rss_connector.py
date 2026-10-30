@@ -1,3 +1,4 @@
+
 #!/usr/bin/env python3
 from __future__ import annotations
 
@@ -16,59 +17,198 @@ from pathlib import Path
 
 
 LEGAL = {"as", "asa", "sa", "ba", "da", "ans", "enk", "nuf", "sti"}
-UA = "SignalpostResearchPOC/1.0 (https://builderr.ai; bounded qualification run)"
+
+UA = (
+    "SignalpostResearchPOC/1.0 "
+    "(https://builderr.ai; bounded qualification run)"
+)
+
+GENERIC_PATHS = {
+    "feed", "feeds", "rss", "search", "category", "categories",
+    "tag", "tags", "topics", "products", "product", "careers",
+    "jobs", "about", "contact", "author", "authors", "video",
+    "videos", "podcast", "latest", "news",
+}
 
 
 def norm(value: object) -> str:
-    return " ".join(token for token in re.findall(r"[a-z0-9æøå]+", str(value or "").casefold()) if token not in LEGAL)
+    return " ".join(
+        token
+        for token in re.findall(
+            r"[a-z0-9æøå]+", str(value or "").casefold()
+        )
+        if token not in LEGAL
+    )
 
 
 def exact_title_match(company_name: str, title: str) -> bool:
-    company_tokens = re.findall(r"[a-z0-9æøå]+", str(company_name or "").casefold())
-    title_tokens = re.findall(r"[a-z0-9æøå]+", str(title or "").rsplit(" - ", 1)[0].casefold())
-    if not company_tokens or not title_tokens or len(company_tokens) > len(title_tokens):
+    company_tokens = re.findall(
+        r"[a-z0-9æøå]+", str(company_name or "").casefold()
+    )
+    title_tokens = re.findall(
+        r"[a-z0-9æøå]+",
+        str(title or "").rsplit(" - ", 1)[0].casefold()
+    )
+
+    if (
+        not company_tokens
+        or not title_tokens
+        or len(company_tokens) > len(title_tokens)
+    ):
         return False
-    # A full legal name may occur after ordinary headline grammar ("fra X AS"),
-    # but not inside a longer company name ("Aneo Roan Vind Holding AS").
-    allowed_predecessors = {"av", "for", "fra", "hos", "i", "med", "om", "på", "til", "og", "kjøper", "velger"}
+
+    allowed_predecessors = {
+        "av", "for", "fra", "hos", "i", "med", "om",
+        "på", "til", "og", "kjøper", "velger"
+    }
+
     for index in range(len(title_tokens) - len(company_tokens) + 1):
         if title_tokens[index:index + len(company_tokens)] != company_tokens:
             continue
+
         if index == 0 or title_tokens[index - 1] in allowed_predecessors:
             return True
+
     return False
+
+
+def valid_article_url(value: str) -> bool:
+    """Reject feeds, search pages and obvious generic navigation URLs."""
+    try:
+        parsed = urllib.parse.urlparse(str(value or "").strip())
+
+        if parsed.scheme not in {"http", "https"}:
+            return False
+
+        if not parsed.hostname:
+            return False
+
+        host = parsed.hostname.casefold()
+        path = urllib.parse.unquote(parsed.path).strip("/").casefold()
+        parts = [part for part in path.split("/") if part]
+
+        if host == "news.google.com":
+            return (
+                len(parts) >= 2
+                and parts[0] in {"rss", "articles"}
+                and parts[1] not in {"search", "feed"}
+                and parts[0] == "rss"
+                and parts[1] == "articles"
+            )
+
+        if not parts:
+            return False
+
+        if parts[0] in GENERIC_PATHS:
+            return False
+
+        if parts[-1] in GENERIC_PATHS:
+            return False
+
+        return True
+
+    except (TypeError, ValueError):
+        return False
+
+
+def parse_publication_date(value: str) -> str | None:
+    """Return a valid timezone-aware RSS publication date in UTC."""
+    if not value:
+        return None
+
+    try:
+        parsed_date = parsedate_to_datetime(value)
+
+        if parsed_date is None or parsed_date.tzinfo is None:
+            return None
+
+        return (
+            parsed_date.astimezone(timezone.utc)
+            .isoformat()
+            .replace("+00:00", "Z")
+        )
+
+    except (TypeError, ValueError, OverflowError):
+        return None
 
 
 def fetch(profile: dict, limit: int, years: int) -> tuple[list[dict], dict]:
     org = str(profile["organisation_number"])
-    query = urllib.parse.quote(f'"{profile["name"]}" when:{years}y')
-    url = f"https://news.google.com/rss/search?q={query}&hl=no&gl=NO&ceid=NO:no"
+
+    query = urllib.parse.quote(
+        f'"{profile["name"]}" when:{years}y'
+    )
+
+    url = (
+        f"https://news.google.com/rss/search?q={query}"
+        "&hl=no&gl=NO&ceid=NO:no"
+    )
+
     try:
-        request = urllib.request.Request(url, headers={"User-Agent": UA, "Accept": "application/rss+xml, application/xml"})
+        request = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": UA,
+                "Accept": "application/rss+xml, application/xml"
+            }
+        )
+
         with urllib.request.urlopen(request, timeout=25) as response:
             raw = response.read(2_000_000)
+
         root = ET.fromstring(raw)
-        retrieved_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+        retrieved_at = (
+            datetime.now(timezone.utc)
+            .isoformat()
+            .replace("+00:00", "Z")
+        )
+
         output = []
         seen = set()
+
         for item in root.findall(".//item"):
             title = str(item.findtext("title") or "").strip()
             link = str(item.findtext("link") or "").strip()
             publisher = str(item.findtext("source") or "").strip()
-            if not link or not exact_title_match(profile["name"], title):
+            published = item.findtext("pubDate")
+
+            # Require a company-specific headline.
+            if not exact_title_match(profile["name"], title):
                 continue
+
+            # Require an individual article candidate URL.
+            if not valid_article_url(link):
+                continue
+
+            # Require a publisher label.
+            if not publisher:
+                continue
+
+            # Require a valid, dated publication timestamp.
+            published_at = parse_publication_date(published)
+
+            if not published_at:
+                continue
+
+            # Deduplicate only after all validation checks.
             key = (title.casefold(), publisher.casefold())
+
             if key in seen:
                 continue
+
             seen.add(key)
-            published = item.findtext("pubDate")
-            try:
-                published_at = parsedate_to_datetime(published).astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
-            except Exception:
-                published_at = None
-            digest = hashlib.sha256(raw + title.encode("utf-8") + publisher.encode("utf-8")).hexdigest()
+
+            digest = hashlib.sha256(
+                raw + title.encode("utf-8")
+                + publisher.encode("utf-8")
+            ).hexdigest()
+
             output.append({
-                "id": "google-news-title-" + hashlib.sha256(f"{org}|{title}|{publisher}".encode()).hexdigest()[:24],
+                "id": "google-news-title-" + hashlib.sha256(
+                    f"{org}|{title}|{publisher}".encode()
+                ).hexdigest()[:24],
+
                 "organisation_number": org,
                 "platform": "news",
                 "signal_type": "public_mention",
@@ -77,10 +217,18 @@ def fetch(profile: dict, limit: int, years: int) -> tuple[list[dict], dict]:
                 "published_at": published_at,
                 "content_sha256": digest,
                 "exact_entity": True,
+
                 "identity_proof": [
-                    {"type": "exact_legal_name_in_news_title", "value": profile["name"]},
-                    {"type": "publisher_label", "value": publisher},
+                    {
+                        "type": "exact_legal_name_in_news_title",
+                        "value": profile["name"]
+                    },
+                    {
+                        "type": "publisher_label",
+                        "value": publisher
+                    },
                 ],
+
                 "acquisition_mode": "rights_review_experiment",
                 "rights_status": "review_required",
                 "source_class": "public_news",
@@ -89,15 +237,30 @@ def fetch(profile: dict, limit: int, years: int) -> tuple[list[dict], dict]:
                 "publisher": publisher,
                 "strategy": "independent_news_discovery",
             })
+
             if len(output) >= limit:
                 break
-        return output, {"organisation_number": org, "items": len(root.findall('.//item')), "accepted": len(output)}
+
+        return output, {
+            "organisation_number": org,
+            "items": len(root.findall(".//item")),
+            "accepted": len(output)
+        }
+
     except Exception as exc:
-        return [], {"organisation_number": org, "items": 0, "accepted": 0, "error": f"{type(exc).__name__}: {str(exc)[:180]}"}
+        return [], {
+            "organisation_number": org,
+            "items": 0,
+            "accepted": 0,
+            "error": f"{type(exc).__name__}: {str(exc)[:180]}"
+        }
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Bounded exact-title Google News RSS discovery experiment.")
+    parser = argparse.ArgumentParser(
+        description="Bounded exact-title Google News RSS discovery experiment."
+    )
+
     parser.add_argument("--profiles", required=True)
     parser.add_argument("--organisations", required=True)
     parser.add_argument("--output", required=True)
@@ -105,32 +268,103 @@ def main() -> None:
     parser.add_argument("--per-company", type=int, default=10)
     parser.add_argument("--years", type=int, default=2)
     parser.add_argument("--workers", type=int, default=4)
+
     args = parser.parse_args()
-    wanted = [line.strip() for line in Path(args.organisations).read_text(encoding="utf-8").splitlines() if line.strip()]
-    profiles = {str(row["organisation_number"]): row for row in (json.loads(line) for line in Path(args.profiles).read_text(encoding="utf-8").splitlines() if line.strip())}
-    observations, results = [], []
-    with ThreadPoolExecutor(max_workers=max(1, min(args.workers, 4))) as pool:
-        futures = {pool.submit(fetch, profiles[org], args.per_company, args.years): org for org in wanted}
+
+    wanted = [
+        line.strip()
+        for line in Path(args.organisations)
+        .read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+
+    profiles = {
+        str(row["organisation_number"]): row
+        for row in (
+            json.loads(line)
+            for line in Path(args.profiles)
+            .read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        )
+    }
+
+    observations = []
+    results = []
+
+    with ThreadPoolExecutor(
+        max_workers=max(1, min(args.workers, 4))
+    ) as pool:
+
+        futures = {
+            pool.submit(
+                fetch, profiles[org], args.per_company, args.years
+            ): org
+            for org in wanted
+        }
+
         for future in as_completed(futures):
             rows, status = future.result()
             observations.extend(rows)
             results.append(status)
+
     order = {org: index for index, org in enumerate(wanted)}
-    observations.sort(key=lambda row: (order[row["organisation_number"]], row.get("published_at") or "", row["id"]))
-    results.sort(key=lambda row: order[row["organisation_number"]])
-    Path(args.output).write_text("".join(json.dumps(row, ensure_ascii=False) + "\n" for row in observations), encoding="utf-8")
+
+    observations.sort(
+        key=lambda row: (
+            order[row["organisation_number"]],
+            row.get("published_at") or "",
+            row["id"]
+        )
+    )
+
+    results.sort(
+        key=lambda row: order[row["organisation_number"]]
+    )
+
+    Path(args.output).write_text(
+        "".join(
+            json.dumps(row, ensure_ascii=False) + "\n"
+            for row in observations
+        ),
+        encoding="utf-8"
+    )
+
     report = {
         "connector": "google_news_rss_exact_title_experiment_v1",
         "companies": len(wanted),
-        "companies_with_mentions": len({row["organisation_number"] for row in observations}),
+        "companies_with_mentions": len({
+            row["organisation_number"] for row in observations
+        }),
         "observations": len(observations),
         "lookback_years": args.years,
         "errors": sum("error" in row for row in results),
-        "claim_boundary": "Discovery-only experimental titles from Google News RSS. Publisher article bodies and storage rights are not independently verified, so these cannot be published or earn strict points.",
+
+        "claim_boundary": (
+            "Discovery-only experimental titles from Google News RSS. "
+            "Article URLs are screened for obvious feed and navigation "
+            "pages, and RSS publication dates are required. Publisher "
+            "article bodies, exact article relevance and storage rights "
+            "are not independently verified. These observations cannot "
+            "be published or earn strict points."
+        ),
+
         "company_results": results,
     }
-    Path(args.report).write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    print(json.dumps({key: value for key, value in report.items() if key != "company_results"}, ensure_ascii=False, indent=2))
+
+    Path(args.report).write_text(
+        json.dumps(report, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8"
+    )
+
+    print(json.dumps(
+        {
+            key: value
+            for key, value in report.items()
+            if key != "company_results"
+        },
+        ensure_ascii=False,
+        indent=2
+    ))
 
 
 if __name__ == "__main__":

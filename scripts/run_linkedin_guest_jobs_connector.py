@@ -56,33 +56,66 @@ def parse_job_cards(raw: bytes, expected_company_url: str) -> tuple[list[dict], 
     soup = BeautifulSoup(raw, "html.parser")
     cards = soup.select("div.base-search-card")
     exact = []
+
     for card in cards:
         company_link = card.select_one("h4.base-search-card__subtitle a")
-        company_url = canonical_company_url(company_link.get("href", "") if company_link else "")
+        company_url = canonical_company_url(
+            company_link.get("href", "") if company_link else ""
+        )
+
         if company_url != expected_company_url:
             continue
+
         job_link = card.select_one("a.base-card__full-link")
         job_url = str(job_link.get("href") or "") if job_link else ""
+        parsed_job_url = urlparse(job_url)
+
         urn = str(card.get("data-entity-urn") or "")
-        job_id_match = re.search(r"(\d{6,})", urn) or re.search(r"-(\d{6,})(?:[/?]|$)", job_url)
-        if not job_id_match:
+        urn_match = re.search(r"(\d{6,})", urn)
+        url_match = re.search(r"-(\d{6,})(?:[/?]|$)", job_url)
+
+        if not url_match:
             continue
-        job_id = job_id_match.group(1)
+
+        job_id = url_match.group(1)
+
+        if urn_match and urn_match.group(1) != job_id:
+            continue
+
+        if (
+            parsed_job_url.hostname not in {
+                "linkedin.com", "www.linkedin.com", "no.linkedin.com"
+            }
+            or "/jobs/view/" not in parsed_job_url.path
+        ):
+            continue
+
         title = card.select_one("span.sr-only")
         company = company_link.get_text(" ", strip=True) if company_link else ""
         location = card.select_one("span.job-search-card__location")
         posted = card.select_one("time")
-        exact.append(
-            {
-                "job_id": job_id,
-                "job_url": f"https://www.linkedin.com/jobs/view/{job_id}",
-                "title": title.get_text(" ", strip=True) if title else "",
-                "company": company,
-                "company_url": company_url,
-                "location": location.get_text(" ", strip=True) if location else "",
-                "date_posted": str(posted.get("datetime") or "") if posted else "",
-            }
-        )
+
+        title_text = title.get_text(" ", strip=True) if title else ""
+        date_posted = str(posted.get("datetime") or "").strip() if posted else ""
+
+        try:
+            datetime.strptime(date_posted[:10], "%Y-%m-%d")
+        except ValueError:
+            continue
+
+        if not title_text or not company:
+            continue
+
+        exact.append({
+            "job_id": job_id,
+            "job_url": f"https://www.linkedin.com/jobs/view/{job_id}",
+            "title": title_text,
+            "company": company,
+            "company_url": company_url,
+            "location": location.get_text(" ", strip=True) if location else "",
+            "date_posted": date_posted,
+        })
+
     return exact, len(cards)
 
 
@@ -320,7 +353,7 @@ def main() -> None:
             raw, content_hash, snapshot_path = frozen_fetch(detail_url, cache_dir, args.timeout)
             if expected_url not in parse_detail_company_urls(raw):
                 raise RuntimeError("job detail does not link the expected exact company handle")
-            item["source_url"] = detail_url
+            item["source_url"] = str(item["metrics"]["job_url"])
             item["content_sha256"] = content_hash
             item["metrics"]["detail_snapshot_path"] = snapshot_path
             item["identity_proof"].append({"type": "job_detail_exact_company_url_match", "value": expected_url})

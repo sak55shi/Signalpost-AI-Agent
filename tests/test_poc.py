@@ -131,6 +131,38 @@ class ExternalFootprintTests(unittest.TestCase):
         self.assertEqual([item["job_id"] for item in jobs], ["4456746433"])
         self.assertEqual(jobs[0]["company_url"], "https://linkedin.com/company/af-gruppen")
 
+    def test_linkedin_guest_jobs_reject_incomplete_or_non_individual_listings(self):
+        def make_card(title=True, date=True, job_path="/jobs/view/example-4456746433"):
+            title_html = '<span class="sr-only">Project manager</span>' if title else ""
+            date_html = '<time datetime="2026-08-23"></time>' if date else ""
+
+            return f'''
+            <div class="base-search-card" data-entity-urn="urn:li:jobPosting:4456746433">
+                <a class="base-card__full-link" href="https://www.linkedin.com{job_path}"></a>
+                {title_html}
+                <h4 class="base-search-card__subtitle">
+                    <a href="https://linkedin.com/company/af-gruppen">AF Gruppen</a>
+                </h4>
+                {date_html}
+            </div>
+            '''
+
+        expected_url = "https://linkedin.com/company/af-gruppen"
+
+        missing_date, _ = parse_job_cards(
+            make_card(date=False).encode(), expected_url
+        )
+        missing_title, _ = parse_job_cards(
+            make_card(title=False).encode(), expected_url
+        )
+        careers_page, _ = parse_job_cards(
+            make_card(job_path="/company/af-gruppen/jobs").encode(), expected_url
+        )
+
+        self.assertEqual(missing_date, [])
+        self.assertEqual(missing_title, [])
+        self.assertEqual(careers_page, [])
+
     def test_linkedin_company_urls_and_typeahead_are_normalized_without_claiming_ambiguous_ids(self):
         self.assertEqual(
             canonical_company_url("https://no.linkedin.com/company/Norsk-Fiskeeksport/about?trk=x"),
