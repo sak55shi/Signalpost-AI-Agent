@@ -134,6 +134,7 @@ def merge_profile_events(profile: dict[str, Any], events: list[dict[str, Any]]) 
     available = [item for item in events if item.get("status") == "available"]
     unique_pages = {}
     social = {}
+    homepage_social = {}
     for item in sorted(available, key=lambda value: (value.get("page_kind") != "homepage", value.get("final_url") or "")):
         page = {
             "url": item.get("final_url"),
@@ -144,7 +145,11 @@ def merge_profile_events(profile: dict[str, Any], events: list[dict[str, Any]]) 
         }
         unique_pages[item.get("final_url")] = page
         for link in item.get("social_links") or []:
-            social[(link.get("platform"), link.get("url"))] = link
+            key = (link.get("platform"), link.get("url"))
+            social[key] = link
+
+            if item.get("page_kind") == "homepage":
+                homepage_social[key] = link
     value = {
         "requested_url": homepage.get("requested_url"),
         "final_url": homepage.get("final_url"),
@@ -154,6 +159,7 @@ def merge_profile_events(profile: dict[str, Any], events: list[dict[str, Any]]) 
         "main_text_excerpt": homepage.get("main_text_excerpt") or "",
         "identity_text_excerpt": homepage.get("identity_text_excerpt") or "",
         "social_links": list(social.values()),
+        "homepage_social_links": list(homepage_social.values()),
         "structured_organisations": homepage.get("structured_organisations") or [],
         "content_sha256": homepage.get("content_sha256"),
         "extraction_state": homepage.get("extraction_state"),

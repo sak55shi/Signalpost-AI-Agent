@@ -828,13 +828,31 @@ class WebsiteTests(unittest.TestCase):
             final_url="https://example.no/contact",
             status_code=200,
             content_type="text/html",
-            body=b"<html><title>Contact</title><body>Contact Example AS in Oslo.</body></html>",
+            body=(
+                b'<html><title>Contact</title><body>'
+                b'Contact Example AS in Oslo.'
+                b'<a href="https://www.instagram.com/secondarybrand/">Instagram</a>'
+                b'</body></html>'
+            ),
             page_kind="priority",
             retrieved_at="2026-08-22T00:00:01Z",
         )
         record = merge_profile_events({"website": "https://example.no"}, [homepage, secondary])
         self.assertEqual(record["status"], "available")
         self.assertEqual(len(record["value"]["pages"]), 2)
+        self.assertEqual(
+            record["value"]["social_links"],
+            [
+                {"platform": "linkedin", "url": "https://linkedin.com/company/example"},
+                {"platform": "instagram", "url": "https://instagram.com/secondarybrand"},
+            ],
+        )
+        self.assertEqual(
+            record["value"]["homepage_social_links"],
+            [
+                {"platform": "linkedin", "url": "https://linkedin.com/company/example"},
+            ],
+        )
         self.assertEqual(record["content_sha256"], homepage["content_sha256"])
         self.assertEqual(record["value"]["scheduler"], "scrapy_resumable_v1")
 
@@ -1317,12 +1335,76 @@ class WebsiteIdentityTests(unittest.TestCase):
         }
         self.assertFalse(assess_website_identity(row)["publishable"])
 
-    def test_social_handle_requires_exact_entity_name_evidence(self):
+    def test_social_handle_requires_company_identity_evidence(self):
         aon = {"name": "Aon Norway AS"}
         fish = {"name": "Norsk Fiskeeksport AS"}
-        self.assertFalse(assess_social_identity(aon, {"platform": "linkedin", "url": "https://linkedin.com/company/aon"})["publishable"])
-        self.assertTrue(assess_social_identity(fish, {"platform": "linkedin", "url": "https://linkedin.com/company/norsk-fiskeeksport"})["publishable"])
+        nifti = {"name": "NIFTI AS"}
 
+        # Ambiguous short handle must remain rejected.
+        self.assertFalse(
+            assess_social_identity(
+                aon,
+                {"platform": "linkedin", "url": "https://linkedin.com/company/aon"},
+            )["publishable"]
+        )
+
+        # Exact company-name handle must be accepted.
+        self.assertTrue(
+            assess_social_identity(
+                fish,
+                {"platform": "linkedin", "url": "https://linkedin.com/company/norsk-fiskeeksport"},
+            )["publishable"]
+        )
+
+        # A branded suffix must not be accepted without supporting evidence.
+        self.assertFalse(
+            assess_social_identity(
+                nifti,
+                {"platform": "instagram", "url": "https://instagram.com/niftiprod"},
+            )["publishable"]
+        )
+
+    def test_verified_homepage_can_support_branded_social_handle(self):
+        website = evidence(
+            "website",
+            "available",
+            "company_site",
+            "https://www.nifti.no/",
+            value={
+                "final_url": "https://www.nifti.no/",
+                "title": "nifti – Fra ide til ferdig produksjon",
+                "main_text_excerpt": (
+                "Nifti is a film production and animation company. "
+                "The company develops creative concepts, produces films, "
+                "and delivers visual storytelling services for its clients."
+                ),
+                "social_links": [
+                    {
+                        "platform": "instagram",
+                        "url": "https://instagram.com/niftiprod",
+                    },
+                ],
+            },
+        )
+
+        profile = {
+            "organisation_number": "924911700",
+            "name": "NIFTI AS",
+            "evidence": {},
+        }
+
+        result = apply_website_identity_gate(profile, website)
+
+        self.assertTrue(result["assessment"]["publishable"])
+        self.assertEqual(
+            result["website"]["value"]["social_links"],
+            [
+                {
+                    "platform": "instagram",
+                    "url": "https://instagram.com/niftiprod",
+                }
+            ],
+        )
 
 class VerifiedSiteSeedTests(unittest.TestCase):
     def test_verified_seed_is_applied_and_unknown_org_is_rejected(self):

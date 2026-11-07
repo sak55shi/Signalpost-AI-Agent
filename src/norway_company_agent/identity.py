@@ -221,6 +221,7 @@ def assess_website_identity(profile: dict[str, Any]) -> dict[str, Any]:
 def assess_social_identity(
     profile: dict[str, Any],
     link: dict[str, str],
+    verified_homepage_link: bool = False,
 ) -> dict[str, Any]:
 
     core = _tokens(profile.get("name"))
@@ -232,7 +233,6 @@ def assess_social_identity(
         if part
     ]
 
-    # Remove platform-specific URL route prefixes.
     if parsed.hostname:
         host = parsed.hostname.casefold().removeprefix("www.")
     else:
@@ -246,7 +246,6 @@ def assess_social_identity(
         if handle_parts[0].casefold() in {"channel", "user", "c"}:
             handle_parts = handle_parts[1:]
 
-    # A company profile should have one identifiable handle.
     handle_tokens = _tokens(" ".join(handle_parts))
 
     matched = [
@@ -254,15 +253,25 @@ def assess_social_identity(
         if token in handle_tokens
     ]
 
-    # Conservative rule:
-    # The complete handle must match the complete legal-name token sequence.
-    # Extra words such as "group", "official" or another company name
-    # cause the profile to be quarantined.
     exact_match = bool(core and handle_tokens == core)
+
+    # A direct link from an independently verified company homepage
+    # is additional identity evidence for the social profile.
+    homepage_verified_match = bool(
+        verified_homepage_link
+        and core
+        and handle_tokens
+    )
+
+    publishable = exact_match or homepage_verified_match
 
     if exact_match:
         score = 0.98
         reason = "complete normalized company name exactly matches the social handle"
+
+    elif homepage_verified_match:
+        score = 0.95
+        reason = "social profile is directly linked from the verified company homepage"
 
     else:
         score = 0.3
@@ -273,11 +282,11 @@ def assess_social_identity(
     return {
         **link,
         "identity_score": score,
-        "publishable": exact_match,
+        "publishable": publishable,
         "matched_tokens": matched,
         "handle_tokens": handle_tokens,
         "reason": reason,
-        "method": "deterministic_exact_social_handle_identity_v2",
+        "method": "deterministic_verified_homepage_social_identity_v3",
     }
 
 
@@ -315,8 +324,23 @@ def apply_website_identity_gate(
 
     value["discovered_social_links"] = original
 
+    homepage_social = {
+        (str(link.get("platform") or ""), str(link.get("url") or ""))
+        for link in value.get("homepage_social_links", value.get("social_links") or [])
+    }
+
     social_assessments = [
-        assess_social_identity(profile, link)
+        assess_social_identity(
+            profile,
+            link,
+            verified_homepage_link=(
+            assessment["publishable"]
+            and (
+                str(link.get("platform") or ""),
+                str(link.get("url") or ""),
+            ) in homepage_social
+        ),
+        )
         for link in original
     ]
 

@@ -52,6 +52,21 @@ def answer_profile(row: dict[str, Any], question: str) -> dict[str, Any]:
             ):
                 if latest.get(key) is not None:
                     facts.append(_claim(label, latest[key], financial, "official_annual_account"))
+
+            for metric, item in (latest.get("insurance_metrics") or {}).items():
+                if item.get("current_year") is not None:
+                    facts.append(_claim(
+                        f"Insurance metric: {item.get('label') or metric}",
+                        {
+                            "year": item.get("year"),
+                            "current_year": item["current_year"],
+                            "comparative_year": item.get("comparative_year"),
+                            "comparative_year_label": item.get("comparative_year_label"),
+                            "currency": "NOK",
+                        },
+                        financial,
+                        "official_annual_account_pdf_ocr",
+                    ))
         else:
             unsupported.append("No normalized annual-account record was returned; missing values are not interpreted as zero.")
 

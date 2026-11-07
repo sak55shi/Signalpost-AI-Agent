@@ -6,6 +6,7 @@ from typing import Any, Callable
 
 from .evidence import evidence
 from .http import FetchResult, fetch_json
+from .financial_ocr import download_official_pdf, ocr_pdf_bytes, parse_insurance_financials
 
 ACCOUNTING_OBLIGATION_SOURCE = "https://www.brreg.no/en/submission-of-annual-accounts/reporting-obligations-to-the-register-of-company-accounts/who-has-an-accounting-obligation/"
 ACCOUNTING_RULESET_VERSION = "brreg_accounting_obligation_rules_2024-08-09_v1"
@@ -178,6 +179,60 @@ def _classified(field: str, source_type: str, result: FetchResult, value: Any = 
     return evidence(field, "source_error", source_type, result.url, note=result.error, content_sha256=result.content_sha256, retrieved_at=result.retrieved_at, effective_at=result.effective_at)
 
 
+
+def _financial_pdf_fallback(org: str, metrics: list[FetchResult]) -> tuple[FetchResult, dict[str, Any]] | None:
+    """Use the latest official annual-account PDF when structured accounts fail."""
+    years_url = BRREG_ACCOUNT_YEARS.format(org=org)
+    years_result = _fetch_history(years_url)
+    metrics.append(years_result)
+    if years_result.status != 200 or not isinstance(years_result.body, list):
+        return None
+
+    history = normalize_financial_history(years_result.body, org)
+    if not history["years"]:
+        return None
+
+    year = history["years"][-1]
+    pdf_url = BRREG_ACCOUNT_PDF.format(org=org, year=year)
+    pdf_result = download_official_pdf(pdf_url)
+    metrics.append(pdf_result)
+    if pdf_result.status != 200 or not pdf_result.body:
+        return None
+
+    try:
+        ocr = ocr_pdf_bytes(pdf_result.body, page_numbers=[1, 2, 3], dpi=180)
+        parsed = parse_insurance_financials(ocr["text"], year)
+    except (RuntimeError, ValueError, OSError):
+        return None
+
+    line_items = parsed.get("line_items", {})
+    if not line_items:
+        return None
+
+    def current(field: str) -> Any:
+        item = line_items.get(field) or {}
+        return item.get("current_year")
+
+    record = {
+        "record_id": f"official-pdf-{org}-{year}",
+        "account_type": "official_annual_account_pdf_ocr",
+        "period": year,
+        "currency": "NOK",
+        "revenue": None,
+        "operating_result": None,
+        "profit_before_tax": current("profit_before_tax"),
+        "annual_result": None,
+        "assets": current("assets"),
+        "equity": current("equity"),
+        "debt": None,
+        "insurance_metrics": line_items,
+        "source_url": pdf_url,
+        "ocr_engine": ocr["ocr_engine"],
+        "ocr_pages": ocr["processed_pages"],
+    }
+    return pdf_result, {"records": [record]}
+
+
 def fetch_official_modules(org: str, modules: set[str], fetcher: Callable[[str], FetchResult] = fetch_json) -> tuple[dict[str, Any], list[FetchResult]]:
     records: dict[str, Any] = {}
     metrics: list[FetchResult] = []
@@ -197,5 +252,13 @@ def fetch_official_modules(org: str, modules: set[str], fetcher: Callable[[str],
         normalized = None
         if result.status == 200:
             normalized = normalize_entity(result.body) if module == "registry_live" else normalize_financials(result.body) if module == "financials" else normalize_financial_history(result.body, org) if module == "financial_history" else normalize_roles(result.body) if module == "roles" else normalize_locations(result.body) if module == "locations" else result.body
+        if module == "financials" and result.status != 200 and fetcher is fetch_json:
+            fallback = _financial_pdf_fallback(org, metrics)
+            if fallback is not None:
+                pdf_result, pdf_value = fallback
+                records[module] = _classified(
+                    module, "official_annual_account_pdf_ocr", pdf_result, value=pdf_value
+                )
+                continue
         records[module] = _classified(module, source_type, result, value=normalized)
     return records, metrics
